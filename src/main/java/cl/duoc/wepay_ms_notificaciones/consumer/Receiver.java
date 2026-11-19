@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Consumidor de las 3 colas principales.
@@ -41,15 +42,44 @@ public class Receiver {
                 + " está " + message.get("estado") + " -> SMS enviado al cliente");
     }
 
+    /**
+     * Facturación recibe dos eventos:
+     *   - ACEPTADO  (pago aprobado)          -> emite la boleta
+     *   - CANCELADO                          -> emite nota de crédito solo si el pedido
+     *                                           ya estaba facturado (aceptado o en preparación)
+     */
     @RabbitListener(queues = RabbitMQConfig.Q_FACTURACION)
     public void receiveFacturacion(Map<String, Object> message) {
-        System.out.println("[" + timestamp() + "] [FACTURACION] Procesando pedido #" + message.get("pedidoId"));
+        Object pedidoId = message.get("pedidoId");
+        String estado = String.valueOf(message.get("estado"));
+        String estadoAnterior = String.valueOf(message.get("estadoAnterior"));
+
+        System.out.println("[" + timestamp() + "] [FACTURACION] Procesando pedido #" + pedidoId
+                + " (" + estadoAnterior + " -> " + estado + ")");
         if (fallaFacturacion) {
             throw new IllegalStateException("Servicio de facturación no disponible (simulado)");
         }
-        System.out.println("[" + timestamp() + "] [FACTURACION] Boleta generada para pedido #"
-                + message.get("pedidoId") + " por $" + message.get("total"));
+
+        switch (estado) {
+            case "ACEPTADO" -> System.out.println("[" + timestamp() + "] [FACTURACION] Boleta generada para pedido #"
+                    + pedidoId + " por $" + message.get("total"));
+            case "CANCELADO" -> {
+                if (FACTURADOS.contains(estadoAnterior)) {
+                    System.out.println("[" + timestamp() + "] [FACTURACION] Nota de crédito generada para pedido #"
+                            + pedidoId + " por $" + message.get("total") + " (anula la boleta)");
+                } else {
+                    System.out.println("[" + timestamp() + "] [FACTURACION] Pedido #" + pedidoId
+                            + " cancelado desde " + estadoAnterior + ": no tenía boleta, no corresponde nota de crédito");
+                }
+            }
+            default -> System.out.println("[" + timestamp() + "] [FACTURACION] Estado " + estado
+                    + " ignorado para pedido #" + pedidoId);
+        }
     }
+
+    /** Estados en los que el pedido ya tiene boleta emitida. */
+    private static final Set<String> FACTURADOS =
+            Set.of("ACEPTADO", "EN_PREPARACION", "DESPACHADO", "ENTREGADO");
 
     private static String timestamp() {
         return LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss.SSS"));
